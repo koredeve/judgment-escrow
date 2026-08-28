@@ -247,3 +247,32 @@ def test_malformed_llm_output_raises_user_error(
     assert contract.get_job("job-1")["status"] == "disputed"
     assert contract.credit_of(direct_bob) == 0
     assert contract.credit_of(direct_alice) == 0
+
+
+def test_client_cannot_accept_own_job(direct_vm, direct_deploy, direct_alice):
+    """The job client cannot accept their own job as a worker."""
+    contract = _deploy(direct_deploy)
+    _create_job(direct_vm, contract, direct_alice)
+
+    direct_vm.sender = direct_alice
+    with direct_vm.expect_revert("Client cannot accept their own job"):
+        contract.accept_job("job-1")
+
+
+def test_empty_job_inputs_rejected(direct_vm, direct_deploy, direct_alice, direct_bob):
+    """Empty description, requirements, or deliverable strings are rejected."""
+    contract = _deploy(direct_deploy)
+    direct_vm.sender = direct_alice
+    direct_vm.value = AMOUNT
+
+    with direct_vm.expect_revert("must not be empty"):
+        contract.create_job("job-bad", "  ", "requirements")
+
+    contract.create_job("job-good", "desc", "reqs")
+    direct_vm.value = 0
+
+    with direct_vm.prank(direct_bob):
+        contract.accept_job("job-good")
+        with direct_vm.expect_revert("Deliverable cannot be empty"):
+            contract.submit_work("job-good", "   ")
+

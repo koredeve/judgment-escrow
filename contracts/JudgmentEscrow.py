@@ -108,25 +108,32 @@ class JudgmentEscrow(gl.Contract):
 	def create_job(self, job_id: str, description: str, requirements: str) -> None:
 		if gl.message.value == u256(0):
 			raise gl.vm.UserError(f"{ERROR_EXPECTED} Send value with the call")
-		if job_id in self.jobs:
+		clean_id = str(job_id).strip()
+		clean_desc = str(description).strip()
+		clean_req = str(requirements).strip()
+		if not clean_id or not clean_desc or not clean_req:
+			raise gl.vm.UserError(f"{ERROR_EXPECTED} Job id, description, and requirements must not be empty")
+		if clean_id in self.jobs:
 			raise gl.vm.UserError(f"{ERROR_EXPECTED} Job id already exists")
-		self.jobs[job_id] = Job(
+		self.jobs[clean_id] = Job(
 			client=gl.message.sender_address,
 			worker="",
-			description=description,
-			requirements=requirements,
+			description=clean_desc,
+			requirements=clean_req,
 			deliverable="",
 			amount_atto=u256(gl.message.value),
 			status=STATUS_OPEN,
 			ruling="",
 		)
-		self.job_ids.append(job_id)
+		self.job_ids.append(clean_id)
 
 	@gl.public.write
 	def accept_job(self, job_id: str) -> None:
 		job = self._get_job(job_id)
 		if job.status != STATUS_OPEN:
 			raise gl.vm.UserError(f"{ERROR_EXPECTED} Job is not open for acceptance")
+		if gl.message.sender_address == job.client:
+			raise gl.vm.UserError(f"{ERROR_EXPECTED} Client cannot accept their own job")
 		job.worker = str(gl.message.sender_address)
 		job.status = STATUS_ACCEPTED
 
@@ -141,7 +148,10 @@ class JudgmentEscrow(gl.Contract):
 			raise gl.vm.UserError(
 				f"{ERROR_EXPECTED} Work can only be submitted after acceptance"
 			)
-		job.deliverable = deliverable
+		clean_deliv = str(deliverable).strip()
+		if not clean_deliv:
+			raise gl.vm.UserError(f"{ERROR_EXPECTED} Deliverable cannot be empty")
+		job.deliverable = clean_deliv
 		job.status = STATUS_SUBMITTED
 
 	@gl.public.write
