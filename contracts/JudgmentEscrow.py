@@ -243,7 +243,7 @@ class JudgmentEscrow(gl.Contract):
 		if amount == u256(0):
 			raise gl.vm.UserError(f"{ERROR_EXPECTED} Nothing to withdraw")
 		self.credits[who] = u256(0)
-		_Recipient(Address(who)).emit_transfer(value=u256(amount))
+		_Recipient(who).emit_transfer(value=u256(amount))
 
 	@gl.public.view
 	def get_job(self, job_id: str) -> dict:
