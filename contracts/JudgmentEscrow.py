@@ -3,12 +3,17 @@
 from genlayer import *
 from dataclasses import dataclass
 import json
+import time
 
 
 ERROR_EXPECTED = "[EXPECTED]"
 ERROR_EXTERNAL = "[EXTERNAL]"
 ERROR_TRANSIENT = "[TRANSIENT]"
 ERROR_LLM = "[LLM_ERROR]"
+
+MIN_DEADLINE_DURATION = 3600              # 1 hour minimum
+MAX_DEADLINE_DURATION = 90 * 24 * 3600    # 90 days maximum
+DEFAULT_DEADLINE_DURATION = 7 * 24 * 3600  # 7 days default
 
 STATUS_OPEN = "open"
 STATUS_ACCEPTED = "accepted"
@@ -85,6 +90,8 @@ class Job:
 	amount_atto: u256
 	status: str
 	ruling: str
+	delivery_duration: u256
+	deadline: u256
 
 
 class JudgmentEscrow(gl.Contract):
@@ -105,7 +112,13 @@ class JudgmentEscrow(gl.Contract):
 		self.credits[who] = self.credits.get(who, u256(0)) + amount
 
 	@gl.public.write.payable
-	def create_job(self, job_id: str, description: str, requirements: str) -> None:
+	def create_job(
+		self,
+		job_id: str,
+		description: str,
+		requirements: str,
+		delivery_duration_seconds: u256 = u256(DEFAULT_DEADLINE_DURATION),
+	) -> None:
 		if gl.message.value == u256(0):
 			raise gl.vm.UserError(f"{ERROR_EXPECTED} Send value with the call")
 		clean_id = str(job_id).strip()
@@ -115,6 +128,15 @@ class JudgmentEscrow(gl.Contract):
 			raise gl.vm.UserError(f"{ERROR_EXPECTED} Job id, description, and requirements must not be empty")
 		if clean_id in self.jobs:
 			raise gl.vm.UserError(f"{ERROR_EXPECTED} Job id already exists")
+
+		duration = delivery_duration_seconds
+		if duration == u256(0):
+			duration = u256(DEFAULT_DEADLINE_DURATION)
+		elif duration < u256(MIN_DEADLINE_DURATION) or duration > u256(MAX_DEADLINE_DURATION):
+			raise gl.vm.UserError(
+				f"{ERROR_EXPECTED} Delivery duration must be between {str(MIN_DEADLINE_DURATION)} and {str(MAX_DEADLINE_DURATION)} seconds"
+			)
+
 		self.jobs[clean_id] = Job(
 			client=gl.message.sender_address,
 			worker="",
@@ -124,6 +146,8 @@ class JudgmentEscrow(gl.Contract):
 			amount_atto=u256(gl.message.value),
 			status=STATUS_OPEN,
 			ruling="",
+			delivery_duration=duration,
+			deadline=u256(0),
 		)
 		self.job_ids.append(clean_id)
 
@@ -136,6 +160,7 @@ class JudgmentEscrow(gl.Contract):
 			raise gl.vm.UserError(f"{ERROR_EXPECTED} Client cannot accept their own job")
 		job.worker = str(gl.message.sender_address)
 		job.status = STATUS_ACCEPTED
+		job.deadline = u256(int(time.time())) + job.delivery_duration
 
 	@gl.public.write
 	def submit_work(self, job_id: str, deliverable: str) -> None:
@@ -147,6 +172,10 @@ class JudgmentEscrow(gl.Contract):
 		if job.status != STATUS_ACCEPTED:
 			raise gl.vm.UserError(
 				f"{ERROR_EXPECTED} Work can only be submitted after acceptance"
+			)
+		if job.deadline != u256(0) and u256(int(time.time())) > job.deadline:
+			raise gl.vm.UserError(
+				f"{ERROR_EXPECTED} Delivery deadline has passed; work cannot be submitted"
 			)
 		clean_deliv = str(deliverable).strip()
 		if not clean_deliv:
@@ -237,6 +266,33 @@ class JudgmentEscrow(gl.Contract):
 		job.status = STATUS_REFUNDED
 
 	@gl.public.write
+	def refund_abandoned_job(self, job_id: str) -> None:
+		job = self._get_job(job_id)
+		if gl.message.sender_address != job.client:
+			raise gl.vm.UserError(f"{ERROR_EXPECTED} Only the client may claim refund for an abandoned job")
+		if job.status != STATUS_ACCEPTED:
+			raise gl.vm.UserError(f"{ERROR_EXPECTED} Job is not in accepted status")
+		if job.deadline == u256(0) or u256(int(time.time())) <= job.deadline:
+			raise gl.vm.UserError(f"{ERROR_EXPECTED} Delivery deadline has not expired yet")
+		self._credit(job.client, job.amount_atto)
+		job.status = STATUS_REFUNDED
+		job.ruling = "Refunded to client: worker abandoned job and missed delivery deadline"
+
+	@gl.public.write
+	def reassign_abandoned_job(self, job_id: str) -> None:
+		job = self._get_job(job_id)
+		if gl.message.sender_address != job.client:
+			raise gl.vm.UserError(f"{ERROR_EXPECTED} Only the client may reassign an abandoned job")
+		if job.status != STATUS_ACCEPTED:
+			raise gl.vm.UserError(f"{ERROR_EXPECTED} Job is not in accepted status")
+		if job.deadline == u256(0) or u256(int(time.time())) <= job.deadline:
+			raise gl.vm.UserError(f"{ERROR_EXPECTED} Delivery deadline has not expired yet")
+		job.worker = ""
+		job.deadline = u256(0)
+		job.status = STATUS_OPEN
+		job.ruling = "Reassigned: worker abandoned job and missed delivery deadline"
+
+	@gl.public.write
 	def withdraw(self) -> None:
 		who = gl.message.sender_address
 		amount = self.credits.get(who, u256(0))
@@ -257,6 +313,8 @@ class JudgmentEscrow(gl.Contract):
 			"amount_atto": job.amount_atto,
 			"status": job.status,
 			"ruling": job.ruling,
+			"delivery_duration": job.delivery_duration,
+			"deadline": job.deadline,
 		}
 
 	@gl.public.view

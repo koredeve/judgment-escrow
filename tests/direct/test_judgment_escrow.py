@@ -276,3 +276,137 @@ def test_empty_job_inputs_rejected(direct_vm, direct_deploy, direct_alice, direc
         with direct_vm.expect_revert("Deliverable cannot be empty"):
             contract.submit_work("job-good", "   ")
 
+
+def test_delivery_duration_bounds(direct_vm, direct_deploy, direct_alice):
+    """Delivery duration must be between 1 hour and 90 days."""
+    contract = _deploy(direct_deploy)
+    direct_vm.sender = direct_alice
+    direct_vm.value = AMOUNT
+
+    # Too short (< 3600s)
+    with direct_vm.expect_revert("Delivery duration must be between"):
+        contract.create_job("job-short", DESCRIPTION, REQUIREMENTS, 1800)
+
+    # Too long (> 90 days)
+    with direct_vm.expect_revert("Delivery duration must be between"):
+        contract.create_job("job-long", DESCRIPTION, REQUIREMENTS, 91 * 24 * 3600)
+
+    # Valid custom duration (3 days)
+    contract.create_job("job-valid", DESCRIPTION, REQUIREMENTS, 3 * 24 * 3600)
+    job = contract.get_job("job-valid")
+    assert job["delivery_duration"] == 3 * 24 * 3600
+    assert job["deadline"] == 0
+
+
+def test_accept_sets_deadline(direct_vm, direct_deploy, direct_alice, direct_bob):
+    """Accepting a job sets the active deadline to current time + delivery duration."""
+    from unittest.mock import patch
+    contract = _deploy(direct_deploy)
+    _create_job(direct_vm, contract, direct_alice)
+
+    now = 1700000000.0
+    with patch("time.time", return_value=now):
+        with direct_vm.prank(direct_bob):
+            contract.accept_job("job-1")
+
+    job = contract.get_job("job-1")
+    assert job["status"] == "accepted"
+    assert job["deadline"] == int(now) + 7 * 24 * 3600
+
+
+def test_abandoned_job_premature_refund_rejected(
+    direct_vm, direct_deploy, direct_alice, direct_bob
+):
+    """Client cannot claim refund for abandoned job before deadline expires."""
+    from unittest.mock import patch
+    contract = _deploy(direct_deploy)
+    _create_job(direct_vm, contract, direct_alice)
+
+    now = 1700000000.0
+    with patch("time.time", return_value=now):
+        with direct_vm.prank(direct_bob):
+            contract.accept_job("job-1")
+
+    # Try refunding while deadline is still in future
+    with patch("time.time", return_value=now + 1000):
+        direct_vm.sender = direct_alice
+        with direct_vm.expect_revert("Delivery deadline has not expired yet"):
+            contract.refund_abandoned_job("job-1")
+
+        with direct_vm.expect_revert("Delivery deadline has not expired yet"):
+            contract.reassign_abandoned_job("job-1")
+
+
+def test_abandoned_job_refund_after_deadline_pays_client(
+    direct_vm, direct_deploy, direct_alice, direct_bob, direct_charlie
+):
+    """Client can safely refund an abandoned job after deadline passes; non-clients cannot."""
+    from unittest.mock import patch
+    contract = _deploy(direct_deploy)
+    _create_job(direct_vm, contract, direct_alice)
+
+    now = 1700000000.0
+    with patch("time.time", return_value=now):
+        with direct_vm.prank(direct_bob):
+            contract.accept_job("job-1")
+
+    # Time advances past deadline (7 days + 1 second)
+    expired_time = now + 7 * 24 * 3600 + 1
+
+    # Non-client cannot refund
+    with patch("time.time", return_value=expired_time):
+        with direct_vm.prank(direct_charlie):
+            with direct_vm.expect_revert("Only the client may claim refund"):
+                contract.refund_abandoned_job("job-1")
+
+        # Worker cannot submit after deadline
+        with direct_vm.prank(direct_bob):
+            with direct_vm.expect_revert("Delivery deadline has passed"):
+                contract.submit_work("job-1", DELIVERABLE)
+
+        # Client safely claims abandoned refund
+        direct_vm.sender = direct_alice
+        contract.refund_abandoned_job("job-1")
+
+    assert contract.credit_of(direct_alice) == AMOUNT
+    assert contract.credit_of(direct_bob) == 0
+    job = contract.get_job("job-1")
+    assert job["status"] == "refunded"
+    assert "abandoned" in job["ruling"]
+
+
+def test_abandoned_job_reassignment_allows_new_worker(
+    direct_vm, direct_deploy, direct_alice, direct_bob, direct_charlie
+):
+    """Client can reassign an abandoned job back to open state so a new worker can accept."""
+    from unittest.mock import patch
+    contract = _deploy(direct_deploy)
+    _create_job(direct_vm, contract, direct_alice)
+
+    now = 1700000000.0
+    with patch("time.time", return_value=now):
+        with direct_vm.prank(direct_bob):
+            contract.accept_job("job-1")
+
+    expired_time = now + 7 * 24 * 3600 + 1
+    with patch("time.time", return_value=expired_time):
+        direct_vm.sender = direct_alice
+        contract.reassign_abandoned_job("job-1")
+
+    job = contract.get_job("job-1")
+    assert job["status"] == "open"
+    assert job["worker"] == ""
+    assert job["deadline"] == 0
+
+    # New worker Charlie accepts and submits
+    now_reassigned = expired_time + 100
+    with patch("time.time", return_value=now_reassigned):
+        with direct_vm.prank(direct_charlie):
+            contract.accept_job("job-1")
+            contract.submit_work("job-1", DELIVERABLE)
+
+    direct_vm.sender = direct_alice
+    contract.approve_work("job-1")
+    assert contract.credit_of(direct_charlie) == AMOUNT
+
+

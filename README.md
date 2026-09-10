@@ -67,16 +67,26 @@ Interface
 
 | Method | Type | Notes |
 | --- | --- | --- |
-| `create_job(job_id, description, requirements)` | write, payable | Requires value > 0; unique id; sender becomes client; status `open`. |
-| `accept_job(job_id)` | write | First-come worker assignment on an `open` job only. |
-| `submit_work(job_id, deliverable)` | write | Accepted worker only, after acceptance; status `submitted`. |
+| `create_job(job_id, description, requirements, delivery_duration_seconds)` | write, payable | Requires value > 0; unique id; bounded duration (1 hr to 90 days, default 7 days); sender becomes client; status `open`. |
+| `accept_job(job_id)` | write | First-come worker assignment on an `open` job only; stamps active `deadline = now + delivery_duration`. |
+| `submit_work(job_id, deliverable)` | write | Accepted worker only, before `deadline`; status `submitted`. |
 | `approve_work(job_id)` | write | Client only, after submission; credits worker in full; status `released`. |
 | `raise_dispute(job_id)` | write | Client or worker only, only on a `submitted` job; status `disputed`. |
 | `resolve_dispute(job_id)` | write | Runs AI arbitration with exact-agreement validation; pays worker (`released`) or refunds client (`refunded`); stores `ruling`. |
 | `cancel_open_job(job_id)` | write | Client only, while still `open`; credits back the client; status `refunded`. |
+| `refund_abandoned_job(job_id)` | write | Client only; safely refunds full escrow if worker accepted but abandoned work and delivery deadline expired; status `refunded`. |
+| `reassign_abandoned_job(job_id)` | write | Client only; resets worker assignment and opens job for new workers if delivery deadline expired; status `open`. |
 | `withdraw()` | write | Drains the caller's credit balance via an emit transfer. |
-| `get_job(job_id)` | view | Full job record; addresses exposed as strings (worker empty until accepted). |
+| `get_job(job_id)` | view | Full job record including delivery duration and deadline timestamp; addresses exposed as strings. |
 | `credit_of(who)` | view | Withdrawable balance of an address. |
 | `total_jobs()` | view | Number of jobs created. |
 
+Deployment
+----------
+
+- **Network**: StudioNet (GenLayer)
+- **Contract Address**: `0x709A46BeE0Bd00DA8b29974C11E1461A79d96F3F`
+- **Explorer**: [https://explorer-studio.genlayer.com/address/0x709A46BeE0Bd00DA8b29974C11E1461A79d96F3F](https://explorer-studio.genlayer.com/address/0x709A46BeE0Bd00DA8b29974C11E1461A79d96F3F)
+
 StudioNet note: transactions on StudioNet are gasless — holding 0 GEN is fine.
+
